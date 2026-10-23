@@ -33,5 +33,4 @@ the locations where they patch the game are different.
 Requires a compiler that targets 32-bit Windows. Due to the `asm` style, `MSVC`
 will not work, use `GCC` or `Clang`. Run `make` in this directory and specify
 the compiler as `CXX` variable if necessary (e.g.
-`make CXX=i686-w64-mingw32-g++`). `make` builds both DLLs; name one of them to
-build just that one.
+`make CXX=i686-w64-mingw32-g++`).
