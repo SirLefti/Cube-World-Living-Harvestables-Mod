@@ -24,9 +24,14 @@ jobs:
 
       - name: Verify the artifacts are 32-bit Windows DLLs
         run: |
+          # older and newer versions of file word this differently, so check each part
           for dll in LivingHarvestables.dll LivingHarvestablesServer.dll; do
-            file "$dll"
-            file "$dll" | grep -q 'PE32 executable (DLL).*Intel 80386.*for MS Windows'
+            info=$(file "$dll")
+            echo "$info"
+            grep -q 'PE32 executable' <<< "$info"
+            grep -q '(DLL)' <<< "$info"
+            grep -q 'MS Windows' <<< "$info"
+            grep -Eq 'Intel (80386|i386)' <<< "$info"
           done
 
       - name: Publish release
