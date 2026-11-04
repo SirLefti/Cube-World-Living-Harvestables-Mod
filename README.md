@@ -4,6 +4,8 @@ Bushes, shrubs, cobwebs, crafting plants and ore and gem deposits get a chance,
 to come to life and turn hostile when you hit them, so you have to fight them
 for the resources instead of just mining them.
 
+![A bush is attacked and comes to life to fight the player](living-harvestables.webp)
+
 This mod is for the **alpha** build of Cube World.
 
 ## Installation
