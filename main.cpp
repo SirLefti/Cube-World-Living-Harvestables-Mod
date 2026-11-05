@@ -45,6 +45,11 @@ static const int WAKE_LEVEL = 0;
 // multiply the entity's HP so the fight lasts more than one swing
 static const float WAKE_HP_MULTIPLIER = 10.0f;
 
+// how far a harvestable stuck in the terrain may be moved out of it when it
+// wakes, in blocks, with no free spot in reach it does not wake
+static const int MOVE_SIDEWAYS = 3;
+static const int MOVE_UP = 2;
+
 // entity types that can wake up (some of those do not spawn naturally)
 static const uint32_t WAKEABLE_TYPES[] = {
     120, 121, 122, 123,   // Bush, SnowBush, SnowBerryBush, CottonPlant
@@ -61,29 +66,37 @@ static const uint32_t WAKEABLE_TYPES[] = {
 // being padded with placeholders
 struct Creature
 {
-    uint8_t  _pad0[0x60];
-    uint8_t  hostile_type; // see HOSTILE_TYPE_HOSTILE
-    uint8_t  _pad1[0x3];
+    uint8_t  _pad0[0x10];
+    int64_t  position[3];   // fixed point, BLOCK per block
+    uint8_t  _pad1[0x38];
+    uint8_t  hostile_type;  // see HOSTILE_TYPE_HOSTILE
+    uint8_t  _pad2[0x3];
     uint32_t entity_type;
-    uint8_t  _pad2[0x16];
+    uint8_t  _pad3[0x16];
     uint16_t appearance_flags;
-    uint8_t  _pad3[0xEC];
+    float    size[3];       // collision box, in blocks
+    uint8_t  _pad4[0xE0];
     float    hp;
-    uint8_t  _pad4[0x20];
+    uint8_t  _pad5[0x20];
     int32_t  level;
-    uint8_t  _pad5[0x1250];
-    void*    behavior; // SequentialBehavior* - 0 on harvestables
+    uint8_t  _pad6[0x1250];
+    void*    behavior;      // SequentialBehavior* - 0 on harvestables
 };
 
-static_assert(offsetof(Creature, hostile_type)     == 0x60,  "hostile_type offset");
-static_assert(offsetof(Creature, entity_type)      == 0x64,  "entity_type offset");
-static_assert(offsetof(Creature, appearance_flags) == 0x7E,  "appearance_flags offset");
-static_assert(offsetof(Creature, hp)               == 0x16C, "hp offset");
-static_assert(offsetof(Creature, level)            == 0x190, "level offset");
-static_assert(offsetof(Creature, behavior)         == 0x13E4, "behavior offset");
+static_assert(offsetof(Creature, position) == 0x10, "position offset");
+static_assert(offsetof(Creature, hostile_type) == 0x60, "hostile_type offset");
+static_assert(offsetof(Creature, entity_type) == 0x64, "entity_type offset");
+static_assert(offsetof(Creature, appearance_flags) == 0x7E, "appearance_flags offset");
+static_assert(offsetof(Creature, size) == 0x80, "size offset");
+static_assert(offsetof(Creature, hp) == 0x16C, "hp offset");
+static_assert(offsetof(Creature, level) == 0x190, "level offset");
+static_assert(offsetof(Creature, behavior) == 0x13E4, "behavior offset");
 
 static const uint8_t  HOSTILE_TYPE_HOSTILE = 1; // 0=friendly player, 1=hostile, 2=friendly, 6=target
 static const uint16_t APPEARANCE_IMMOVABLE = 0x0100; // bit 8 set -> creature immovable
+
+// one block in the game's fixed point positions
+static const int64_t BLOCK = 0x10000;
 
 // the game itself passes this value as well
 static const float COMBAT_BEHAVIOR_ARG = 20.0f;
@@ -95,6 +108,7 @@ static const uint32_t LOOKAT_BEHAVIOR_SIZE     = 0x04;
 static const uint32_t WALK_BEHAVIOR_SIZE       = 0x08;
 
 typedef float (__attribute__((thiscall)) *GetMaxHpFn)(Creature* creature);
+typedef bool  (__attribute__((thiscall)) *IsBlockedFn)(void* world, const int64_t* position, const float* size, bool testObjects);
 typedef void* (__cdecl *OperatorNewFn)(uint32_t size);
 typedef void* (__attribute__((thiscall)) *CtorFn)(void* self);
 typedef void* (__attribute__((thiscall)) *CtorFloatFn)(void* self, float arg);
@@ -102,6 +116,7 @@ typedef void  (__attribute__((thiscall)) *ListPushBackFn)(void* list, void** val
 
 static uint32_t       base;
 static GetMaxHpFn     GetMaxHP;
+static IsBlockedFn    IsBlocked;
 static OperatorNewFn  GameNew;
 static CtorFn         SequentialBehaviorCtor;
 static CtorFloatFn    CombatBehaviorCtor;
@@ -180,11 +195,67 @@ static bool IsWakeable(uint32_t type)
     return false;
 }
 
+// returns false if the collision could not be solved, true if it was solved or
+// there was no collision at all
+static bool FreeFromTerrain(void* world, Creature* creature)
+{
+    // Mainly a fix when ore deposits in caves are rolled to wake up. They can
+    // often generate being clipped partially into ground or walls. This is an
+    // issue when they wake up, because each game tick tries to solve such
+    // collisions. The usual approach for the game is to lift the creature up by
+    // one block per tick until it does not collide any more. In caves, that
+    // often means the deposits get teleported upwards out of the cave.
+
+    // nothing to do if not blocked, which is usually the case
+    if (!IsBlocked(world, creature->position, creature->size, false)) {
+        return true;
+    }
+
+    // look for the nearest spot in MOVE_SIDEWAYS in X and Y axis that does not block
+    int64_t spot[3];
+    int64_t best[3];
+    uint32_t bestDistance = UINT32_MAX; // nothing found yet
+    for (int dx = -MOVE_SIDEWAYS; dx <= MOVE_SIDEWAYS; dx++) {
+        for (int dy = -MOVE_SIDEWAYS; dy <= MOVE_SIDEWAYS; dy++) {
+            uint32_t distance = dx * dx + dy * dy;
+            if (distance == 0 || distance >= bestDistance) {
+                // the spot itself, or not nearer than the best so far
+                continue;
+            }
+            spot[0] = creature->position[0] + dx * BLOCK;
+            spot[1] = creature->position[1] + dy * BLOCK;
+            spot[2] = creature->position[2];
+            if (!IsBlocked(world, spot, creature->size, false)) {
+                bestDistance = distance;
+                memcpy(best, spot, sizeof(best));
+            }
+        }
+    }
+    if (bestDistance != UINT32_MAX) {
+        memcpy(creature->position, best, sizeof(best));
+        return true;
+    }
+
+    // look for a spot in MOVE_UP in Z axis that does not block
+    for (int dz = 1; dz <= MOVE_UP; dz++) {
+        spot[0] = creature->position[0];
+        spot[1] = creature->position[1];
+        spot[2] = creature->position[2] + dz * BLOCK;
+        if (!IsBlocked(world, spot, creature->size, false)) {
+            memcpy(creature->position, spot, sizeof(spot));
+            return true;
+        }
+    }
+
+    // return false if no solution was found and the creature is still blocked
+    return false;
+}
+
 // ---- hook body --------------------------------------------------------------
 // length of instructions we replace
 static const int HOOK_LEN = 8;
 
-extern "C" void OnCreatureHit(Creature* victim)
+extern "C" void OnCreatureHit(void* world, Creature* victim)
 {
     if (!victim) {
         return;
@@ -205,6 +276,11 @@ extern "C" void OnCreatureHit(Creature* victim)
 
     if (rng.NextFloat() >= WAKE_CHANCE) {
         // wake chance not reached
+        return;
+    }
+
+    if (!FreeFromTerrain(world, victim)) {
+        // buried too deep, stays a normal harvestable
         return;
     }
 
@@ -250,9 +326,10 @@ extern "C" __attribute__((naked)) void HookStub()
     asm("movups xmmword ptr [esp+0x60], xmm6");
     asm("movups xmmword ptr [esp+0x70], xmm7");
 
-    asm("push esi");                            // esi = victim Creature*
-    asm("call _OnCreatureHit");
-    asm("add esp, 4");                          // cdecl, caller cleans
+    asm("push esi");                            // victim Creature*, 2nd argument for next function call
+    asm("push dword ptr [ebp-0x2f0]");          // world World*, 1st argument for next function call
+    asm("call _OnCreatureHit");                 // call function to potentially wake up the creature
+    asm("add esp, 8");                          // remove the arguments from the stack
 
     asm("movups xmm0, xmmword ptr [esp+0x00]");
     asm("movups xmm1, xmmword ptr [esp+0x10]");
@@ -267,7 +344,7 @@ extern "C" __attribute__((naked)) void HookStub()
     asm("popfd");
 
     asm("movss xmm0, dword ptr [esi + 0x16c]"); // original code
-    asm("jmp dword ptr [_jmp_back]");           // -> subss xmm0, [ebx+0x10]
+    asm("jmp dword ptr [_jmp_back]");           // jump back
 }
 
 // ---- patching ---------------------------------------------------------------
@@ -311,6 +388,7 @@ extern "C" __declspec(dllexport) BOOL APIENTRY DllMain(HINSTANCE hinstDLL, DWORD
 
     base = (uint32_t)GetModuleHandle(NULL);
     GetMaxHP                 = (GetMaxHpFn)    (base + RVA_GET_MAX_HP);
+    IsBlocked                = (IsBlockedFn)   (base + RVA_IS_BLOCKED);
     GameNew                  = (OperatorNewFn) (base + RVA_OPERATOR_NEW);
     SequentialBehaviorCtor   = (CtorFn)        (base + RVA_SEQ_BEHAVIOR);
     CombatBehaviorCtor       = (CtorFloatFn)   (base + RVA_COMBAT_BEHAVIOR);

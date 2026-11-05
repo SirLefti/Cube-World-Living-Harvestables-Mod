@@ -7,6 +7,7 @@
 static const uint32_t RVA_HIT             = 0x00195FEE;
 
 static const uint32_t RVA_GET_MAX_HP      = 0x00044DB0; // Creature::GetMaxHP -> st0
+static const uint32_t RVA_IS_BLOCKED      = 0x0019F0A0; // World::isBlocked(pos, size, objects)
 
 // behavior machinery
 static const uint32_t RVA_OPERATOR_NEW    = 0x0028D668; // operator new(uint)    cdecl
