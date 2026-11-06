@@ -314,11 +314,11 @@ extern "C" {
 
 extern "C" __attribute__((naked)) void HookStub()
 {
-    asm("pushfd");                              // flags
-    asm("pushad");                              // esp -= 32
-    asm("sub esp, 0x80");
-    asm("movups xmmword ptr [esp+0x00], xmm0"); // all of xmm0-7 must
-    asm("movups xmmword ptr [esp+0x10], xmm1"); // survive the call
+    asm("pushfd");                              // push EFLAGS to stack
+    asm("pushad");                              // push registers to stack
+    asm("sub esp, 0x80");                       // prepare xmm write to stack
+    asm("movups xmmword ptr [esp+0x00], xmm0"); // writes xmm registers to stack
+    asm("movups xmmword ptr [esp+0x10], xmm1");
     asm("movups xmmword ptr [esp+0x20], xmm2");
     asm("movups xmmword ptr [esp+0x30], xmm3");
     asm("movups xmmword ptr [esp+0x40], xmm4");
@@ -331,7 +331,7 @@ extern "C" __attribute__((naked)) void HookStub()
     asm("call _OnCreatureHit");                 // call function to potentially wake up the creature
     asm("add esp, 8");                          // remove the arguments from the stack
 
-    asm("movups xmm0, xmmword ptr [esp+0x00]");
+    asm("movups xmm0, xmmword ptr [esp+0x00]"); // reads stack back to xmm registers
     asm("movups xmm1, xmmword ptr [esp+0x10]");
     asm("movups xmm2, xmmword ptr [esp+0x20]");
     asm("movups xmm3, xmmword ptr [esp+0x30]");
@@ -339,9 +339,9 @@ extern "C" __attribute__((naked)) void HookStub()
     asm("movups xmm5, xmmword ptr [esp+0x50]");
     asm("movups xmm6, xmmword ptr [esp+0x60]");
     asm("movups xmm7, xmmword ptr [esp+0x70]");
-    asm("add esp, 0x80");
-    asm("popad");
-    asm("popfd");
+    asm("add esp, 0x80");                       // remove xmm registers from the stack
+    asm("popad");                               // pops stack back to registers
+    asm("popfd");                               // pops stack back to EFLAGS
 
     asm("movss xmm0, dword ptr [esi + 0x16c]"); // original code
     asm("jmp dword ptr [_jmp_back]");           // jump back
